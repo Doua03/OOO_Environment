@@ -1,0 +1,11 @@
+Model Information:
+* title:	Mana Fantasy Teamed Portal
+* source:	https://sketchfab.com/3d-models/mana-fantasy-teamed-portal-7c01afe6651c45cb85470065353a8287
+* author:	MA3D (https://sketchfab.com/SculptMike)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Mana Fantasy Teamed Portal" (https://sketchfab.com/3d-models/mana-fantasy-teamed-portal-7c01afe6651c45cb85470065353a8287) by MA3D (https://sketchfab.com/SculptMike) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

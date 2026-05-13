@@ -1,0 +1,8 @@
+Model Information:
+* title:	Hand painted forest
+* source:	https://sketchfab.com/3d-models/hand-painted-forest-8f52416156d24fefb577d6244d7aca7e
+* author:	Pasha (https://sketchfab.com/Pasha.)
+
+Model License:
+* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
+* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works
