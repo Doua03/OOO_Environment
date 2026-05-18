@@ -415,9 +415,9 @@ const lonelyCamera = new THREE.PerspectiveCamera(
 lonelyCamera.rotation.order = "YXZ";
 
 // ── Lighting LONELY  ─────────────────
-lonelyScene.add(new THREE.AmbientLight(0x152033, 0.62));
+lonelyScene.add(new THREE.AmbientLight(0x1b2638, 0.72));
 
-const lonelyMoon = new THREE.DirectionalLight(0x7ea6e6, 1.35);
+const lonelyMoon = new THREE.DirectionalLight(0x7ea6e6, 1.45);
 lonelyMoon.position.set(-8, 20, 12);
 lonelyMoon.castShadow = true;
 lonelyMoon.shadow.mapSize.width = 512;
@@ -444,6 +444,10 @@ lonelyScene.add(lonelyMainLight);
 const lonelyBackLight = new THREE.PointLight(0x2b4165, 1.6, 50);
 lonelyBackLight.position.set(4, 4, -9);
 lonelyScene.add(lonelyBackLight);
+
+const lonelySkyFill = new THREE.HemisphereLight(0x2a426d, 0x0c1118, 0.55);
+
+lonelyScene.add(lonelySkyFill);
 
 let lonelyLightTime = 0;
 
@@ -521,8 +525,8 @@ let lonelySkyMaterial = null;
       float height = clamp(dir.y, 0.0, 1.0);
 
       // ciel légèrement plus lumineux
-      vec3 horizonColor = vec3(0.035, 0.05, 0.095);
-      vec3 zenithColor  = vec3(0.008, 0.012, 0.022);
+      vec3 horizonColor = vec3(0.06, 0.08, 0.14);
+      vec3 zenithColor  = vec3(0.015, 0.02, 0.04);
 
       vec3 sky = mix(
         horizonColor,
@@ -690,23 +694,16 @@ function _buildProceduralSidewalk(size = 32) {
   _clearProceduralMeshes();
 
   const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x0e1218,
-    roughness: 0.92,
-    metalness: 0.02,
+    color: 0x101722,
+    roughness: 0.95,
+    metalness: 0.01,
   });
-
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(size, size), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.1;
   ground.receiveShadow = true;
   lonelyScene.add(ground);
   _proceduralMeshes.push(ground);
-
-  const divisions = Math.max(10, Math.round(size / 2));
-  const grid = new THREE.GridHelper(size, divisions, 0x172033, 0x0c111a);
-  grid.position.y = -0.05;
-  lonelyScene.add(grid);
-  _proceduralMeshes.push(grid);
 }
 
 function _clearProceduralMeshes() {
@@ -832,7 +829,7 @@ function loadLonelyWorld() {
       const centerX = (newBox.min.x + newBox.max.x) / 2;
       const centerZ = (newBox.min.z + newBox.max.z) / 2;
 
-      env.position.set(-centerX, -newBox.min.y, -centerZ);
+      env.position.set(-centerX, -newBox.min.y - 0.45, -centerZ);
       lonelyScene.add(env);
 
       env.updateMatrixWorld(true);
@@ -1170,7 +1167,7 @@ function animate() {
 
       if (lonelySkyMaterial) lonelySkyMaterial.uniforms.time.value = time;
 
-      renderer.toneMappingExposure = 1.38;
+      renderer.toneMappingExposure = 1.42;
       renderer.render(lonelyScene, lonelyCamera);
     } else {
       camera.position.copy(player.position);
