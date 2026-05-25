@@ -234,12 +234,12 @@ const CHARACTER_PORTALS = [
       "A warrior lost to his own obsession, forever seeking perfection in the frozen wastes.",
   },
   {
-    name: "???",
-    subtitle: "The Unknown",
-    color: 0x888888,
-    zone: "???",
+    name: "Zara",
+    subtitle: "The Free Spirit",
+    color: 0xffaa44,
+    zone: "Sunlit Meadow",
     description:
-      "This portal stirs in silence. Something beyond the veil waits to be discovered…",
+      "A wanderer who dances between worlds, leaving trails of colour and warmth wherever she roams.",
   },
 ];
 
@@ -282,11 +282,12 @@ class PortalManager {
   _hidePrompt() {
     this.prompt.style.opacity = "0";
   }
-  add(portal, charData, worldPos) {
+  add(portal, charData, worldPos, autoTrigger = false) {
     this.entries.push({
       mesh: portal,
       data: charData,
       position: worldPos.clone(),
+      autoTrigger,
     });
   }
   update(playerPos) {
@@ -295,10 +296,11 @@ class PortalManager {
       return null;
     }
     for (const entry of this.entries) {
-      if (
-        playerPos.distanceTo(entry.position) <
-        CONFIG.portals.interactionDistance
-      ) {
+      if (playerPos.distanceTo(entry.position) < CONFIG.portals.interactionDistance) {
+        if (entry.autoTrigger) {
+          this._hidePrompt();
+          return entry;
+        }
         this._showPrompt(entry.data.name);
         if (window.interactPressed) {
           window.interactPressed = false;
@@ -387,6 +389,7 @@ function showCharacterIntroduction(character) {
     setTimeout(() => {
       introDiv.remove();
       if (character.subtitle === "The Lonely") loadLonelyWorld();
+      else if (character.subtitle === "The Free Spirit") loadHippieWorld();
       else isTransitioning = false;
     }, 320);
     document.removeEventListener("keydown", dismiss);
@@ -883,6 +886,569 @@ function loadLonelyWorld() {
   );
 }
 
+// ─── Hippie World ────────────────────────────────────────────────────────────
+let hippieActive = false;
+let hippieGLTFLoaded = false;
+let hippieEnvironmentModel = null;
+let hippieCharacterMixers = []; // AnimationMixers for the two dancers
+let hippieDanceLights = [];     // coloured lights around the dance floor
+let freeSpirit = false;         // true once the player chooses to join the dance
+let hippieAudio = null;         // ambient music for the hippie world
+
+const hippieScene = new THREE.Scene();
+// no fog — clean open feel
+
+const hippieCamera = new THREE.PerspectiveCamera(
+  70,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  1000,
+);
+hippieCamera.rotation.order = "YXZ";
+
+// ── Lighting HIPPIE ──────────────────────────────────────────────────────────
+hippieScene.add(new THREE.AmbientLight(0xffffff, 1.1));
+
+const hippieSun = new THREE.DirectionalLight(0xffffff, 1.4);
+hippieSun.position.set(10, 30, 15);
+hippieSun.castShadow = true;
+hippieSun.shadow.mapSize.width = 512;
+hippieSun.shadow.mapSize.height = 512;
+Object.assign(hippieSun.shadow.camera, {
+  near: 1, far: 120, left: -40, right: 40, top: 40, bottom: -40,
+});
+hippieSun.shadow.bias = -0.0008;
+hippieScene.add(hippieSun);
+
+const hippieFillLight = new THREE.DirectionalLight(0xffffff, 0.6);
+hippieFillLight.position.set(-10, 15, -10);
+hippieScene.add(hippieFillLight);
+
+const hippieBackLight = new THREE.DirectionalLight(0xffffff, 0.4);
+hippieBackLight.position.set(0, 10, -20);
+hippieScene.add(hippieBackLight);
+
+const hippieSkyFill = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.5);
+hippieScene.add(hippieSkyFill);
+
+let hippieLightTime = 0;
+
+// ── Hippie Sky — bright psychedelic gradient ─────────────────────────────────
+let hippieSkyMaterial = null;
+
+(function _initHippieSkyDome() {
+  hippieSkyMaterial = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 } },
+    vertexShader: `
+      varying vec3 vWorldDir;
+      void main() {
+        vWorldDir = normalize((modelMatrix * vec4(position, 0.0)).xyz);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float time;
+      varying vec3 vWorldDir;
+      void main() {
+        vec3 dir = normalize(vWorldDir);
+        float h = clamp(dir.y, 0.0, 1.0);
+
+        // vivid rainbow gradient cycling over time
+        float t = time * 0.08;
+        vec3 a = vec3(0.5, 0.5, 0.5);
+        vec3 b = vec3(0.5, 0.5, 0.5);
+        vec3 c = vec3(1.0, 1.0, 1.0);
+        vec3 d = vec3(0.00, 0.33, 0.67);
+        vec3 zenith = a + b * cos(6.28318 * (c * (h + t) + d));
+
+        // bright horizon
+        vec3 horizon = vec3(1.0, 0.85, 0.4);
+        vec3 sky = mix(horizon, zenith, smoothstep(0.0, 0.7, h));
+
+        // subtle sun
+        vec3 sunDir = normalize(vec3(0.45, 0.72, 0.52));
+        float sunDot = dot(dir, sunDir);
+        sky += vec3(1.0, 1.0, 0.8) * smoothstep(0.9992, 0.9999, sunDot);
+        sky += vec3(1.0, 0.8, 0.3) * smoothstep(0.97, 0.9992, sunDot) * 0.25;
+
+        gl_FragColor = vec4(sky, 1.0);
+      }
+    `,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+  });
+  hippieScene.add(new THREE.Mesh(new THREE.SphereGeometry(490, 64, 32), hippieSkyMaterial));
+})();
+
+// ── Hippie floating orbs (coloured point lights + visible spheres) ────────────
+const HIPPIE_ORB_COLORS = [0xff3399, 0x33ffcc, 0xffee00, 0xff6600, 0x9933ff, 0x00ccff];
+const hippieOrbs = [];
+
+(function _buildHippieOrbs() {
+  HIPPIE_ORB_COLORS.forEach((col, i) => {
+    const angle = (i / HIPPIE_ORB_COLORS.length) * Math.PI * 2;
+    const radius = 10 + Math.random() * 6;
+    const yBase = 3 + Math.random() * 6;
+
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 12, 12),
+      new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: new THREE.Color(col),
+        emissiveIntensity: 2.5,
+        roughness: 0.1,
+        metalness: 0.0,
+      }),
+    );
+    mesh.position.set(Math.cos(angle) * radius, yBase, Math.sin(angle) * radius);
+    hippieScene.add(mesh);
+
+    const light = new THREE.PointLight(col, 2.5, 18);
+    mesh.add(light);
+
+    hippieOrbs.push({ mesh, angle, radius, yBase, speed: 0.18 + Math.random() * 0.12 });
+  });
+})();
+
+// ── Hippie ground plane ───────────────────────────────────────────────────────
+const _hippieTexLoader = new THREE.TextureLoader();
+
+function _loadTiled(path, repeat = 12) {
+  const tex = _hippieTexLoader.load(path);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeat, repeat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const hippieGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshStandardMaterial({
+    map:          _loadTiled("grass/2K/Poliigon_GrassPatchyGround_4585_BaseColor.jpg"),
+    normalMap:    (() => { const t = _hippieTexLoader.load("grass/2K/Poliigon_GrassPatchyGround_4585_Normal.png"); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(12, 12); return t; })(),
+    roughnessMap: (() => { const t = _hippieTexLoader.load("grass/2K/Poliigon_GrassPatchyGround_4585_Roughness.jpg"); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(12, 12); return t; })(),
+    aoMap:        (() => { const t = _hippieTexLoader.load("grass/2K/Poliigon_GrassPatchyGround_4585_AmbientOcclusion.jpg"); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(12, 12); return t; })(),
+    roughness:    1.0,
+    metalness:    0.0,
+  }),
+);
+hippieGround.rotation.x = -Math.PI / 2;
+hippieGround.position.y = -0.1;
+hippieGround.receiveShadow = true;
+hippieScene.add(hippieGround);
+
+// ── Load Hippie World ────────────────────────────────────────────────────────
+function loadHippieWorld() {
+  if (hippieGLTFLoaded) return;
+  hippieGLTFLoaded = true;
+
+  const overlay = document.createElement("div");
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: #1a0d2e; z-index: 2000; pointer-events: none;
+    opacity: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    transition: opacity 0.9s ease;
+  `;
+
+  const loadMsg = document.createElement("div");
+  loadMsg.style.cssText = `
+    color: rgba(255, 170, 80, 0.9);
+    font-family: monospace; font-size: 13px;
+    letter-spacing: 5px; text-transform: uppercase; text-align: center;
+  `;
+  loadMsg.textContent = "entering the sunlit meadow...";
+
+  const loadDots = document.createElement("div");
+  loadDots.style.cssText = `
+    color: rgba(200, 120, 60, 0.5);
+    font-family: monospace; font-size: 9px;
+    letter-spacing: 3px; text-transform: uppercase;
+  `;
+  loadDots.textContent = "loading world";
+
+  let dotCount = 0;
+  const dotInterval = setInterval(() => {
+    dotCount = (dotCount + 1) % 4;
+    loadDots.textContent = "loading world" + ".".repeat(dotCount);
+  }, 400);
+
+  overlay.appendChild(loadMsg);
+  overlay.appendChild(loadDots);
+  document.body.appendChild(overlay);
+
+  // clear main scene
+  scene.traverse((obj) => {
+    if (!obj.isMesh) return;
+    if (obj.geometry) obj.geometry.dispose();
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((m) => { if (m) { if (m.map) m.map.dispose(); m.dispose(); } });
+  });
+  while (scene.children.length > 0) scene.remove(scene.children[0]);
+
+  player.position.set(0, 1.6, 12);
+  player.velocity.set(0, 0, 0);
+  mouseX = 0;
+  mouseY = -0.1;
+  hippieCamera.position.copy(player.position);
+
+  hippieActive = true;
+  isTransitioning = false;
+
+  // ── Start ambient music ────────────────────────────────────────────────────
+  if (!hippieAudio) {
+    hippieAudio = new Audio("sound/hippie.mp3");
+    hippieAudio.loop = true;
+    hippieAudio.volume = 0.5;
+  }
+  hippieAudio.currentTime = 0;
+  hippieAudio.play().catch(() => {
+    // autoplay blocked — retry on next user interaction
+    const resume = () => { hippieAudio.play(); document.removeEventListener("click", resume); };
+    document.addEventListener("click", resume);
+  });
+
+  const hippieLoader = new GLTFLoader();
+  hippieLoader.load(
+    "models/hippie/scene.gltf",
+    (gltf) => {
+      clearInterval(dotInterval);
+
+      const env = gltf.scene;
+      hippieEnvironmentModel = env;
+
+      env.traverse((node) => {
+        if (!node.isMesh) return;
+        node.castShadow = true;
+        node.receiveShadow = true;
+        const mats = Array.isArray(node.material) ? node.material : [node.material];
+        mats.forEach((m) => {
+          if (m) {
+            if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+            if (m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+          }
+        });
+      });
+
+      env.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(env);
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.z);
+
+      // bigger model
+      const targetSize = 32;
+      if (maxDim > 0) env.scale.setScalar(targetSize / maxDim);
+
+      env.updateMatrixWorld(true);
+      const newBox = new THREE.Box3().setFromObject(env);
+      env.position.set(
+        -((newBox.min.x + newBox.max.x) / 2),
+        -newBox.min.y,
+        -((newBox.min.z + newBox.max.z) / 2),
+      );
+      hippieScene.add(env);
+
+      env.updateMatrixWorld(true);
+      const finalBox = new THREE.Box3().setFromObject(env);
+      const modelHeight = finalBox.max.y;
+      const modelFrontZ = finalBox.max.z;
+      const modelCenterX = (finalBox.min.x + finalBox.max.x) / 2;
+
+      // position orbs relative to model size
+      const orbRadius = Math.max(finalBox.max.x - finalBox.min.x, finalBox.max.z - finalBox.min.z) * 0.55;
+      hippieOrbs.forEach((orb) => {
+        orb.radius = orbRadius * (0.8 + Math.random() * 0.4);
+        orb.cx = modelCenterX;
+        orb.cz = (finalBox.min.z + finalBox.max.z) / 2;
+      });
+
+      player.position.set(
+        modelCenterX,
+        Math.max(1.6, modelHeight * 0.18),
+        modelFrontZ + 7,
+      );
+      player.velocity.set(0, 0, 0);
+      mouseX = 0;
+      mouseY = -0.1;
+      hippieCamera.position.copy(player.position);
+
+      // ── Load dancing characters ─────────────────────────────────────────────
+      const CHAR_SCALE = 0.032;
+
+      function loadDancer(path, xOffset, zOffset, rotY) {
+        const loader = new GLTFLoader();
+        loader.load(
+          path,
+          (gltf) => {
+            const character = gltf.scene;
+            character.traverse((node) => {
+              if (!node.isMesh) return;
+              node.castShadow = true;
+              node.receiveShadow = true;
+              const mats = Array.isArray(node.material) ? node.material : [node.material];
+              mats.forEach((m) => {
+                if (m?.map) m.map.colorSpace = THREE.SRGBColorSpace;
+                if (m?.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+              });
+            });
+
+            character.scale.setScalar(CHAR_SCALE);
+            character.position.set(
+              modelCenterX + xOffset,
+              0,
+              (finalBox.min.z + finalBox.max.z) / 2 + zOffset,
+            );
+            character.rotation.y = rotY;
+            hippieScene.add(character);
+
+            if (gltf.animations && gltf.animations.length > 0) {
+              const mixer = new THREE.AnimationMixer(character);
+              const action = mixer.clipAction(gltf.animations[0]);
+              action.reset();
+              action.setLoop(THREE.LoopRepeat);
+              action.play();
+              hippieCharacterMixers.push(mixer);
+            }
+          },
+          undefined,
+          (err) => console.warn(`Dancer load failed (${path}):`, err),
+        );
+      }
+
+      // man dancing — on the grass to the right, facing the camera
+      loadDancer("models/man dancing/Silly Dancing.gltf",  10.0, 4.0, 0);
+      // woman dancing — beside him, also facing the camera
+      loadDancer("models/woman dancing/Dancing.gltf",       12.5, 4.0, 0);
+
+      // ── Dance-floor ambiance lights ─────────────────────────────────────────
+      // warm golden spotlight from above
+      const danceSpot = new THREE.PointLight(0xffcc44, 4.0, 22);
+      danceSpot.position.set(modelCenterX + 7.5, 8, (finalBox.min.z + finalBox.max.z) / 2 + 4.0);
+      hippieScene.add(danceSpot);
+
+      // pink rim from the left
+      const pinkRim = new THREE.PointLight(0xff44aa, 2.5, 18);
+      pinkRim.position.set(modelCenterX + 3.5, 4, (finalBox.min.z + finalBox.max.z) / 2 + 4.0);
+      hippieScene.add(pinkRim);
+
+      // cyan rim from the right
+      const cyanRim = new THREE.PointLight(0x44ffee, 2.5, 18);
+      cyanRim.position.set(modelCenterX + 11.5, 4, (finalBox.min.z + finalBox.max.z) / 2 + 4.0);
+      hippieScene.add(cyanRim);
+
+      // soft purple fill from behind the dancers
+      const purpleFill = new THREE.PointLight(0xaa44ff, 1.8, 20);
+      purpleFill.position.set(modelCenterX + 7.5, 3, (finalBox.min.z + finalBox.max.z) / 2 + 1.0);
+      hippieScene.add(purpleFill);
+
+      // store for pulsing in animate loop
+      hippieDanceLights = [
+        { light: danceSpot,  base: 4.0,  freq: 1.8, amp: 0.8 },
+        { light: pinkRim,    base: 2.5,  freq: 2.3, amp: 0.6 },
+        { light: cyanRim,    base: 2.5,  freq: 1.5, amp: 0.6 },
+        { light: purpleFill, base: 1.8,  freq: 2.8, amp: 0.5 },
+      ];
+
+      overlay.style.opacity = "0";
+      setTimeout(() => {
+        overlay.remove();
+        _showFreeSpritButton();
+      }, 950);
+    },
+    undefined,
+    (err) => {
+      clearInterval(dotInterval);
+      console.log("GLTF hippie not found", err);
+      overlay.style.opacity = "0";
+      setTimeout(() => {
+        overlay.remove();
+        _showFreeSpritButton();
+      }, 950);
+    },
+  );
+}
+
+// ── Free Spirit button & popup ────────────────────────────────────────────────
+let _freeSpiritBtn = null;
+
+function _showFreeSpritButton() {
+  if (_freeSpiritBtn) return;
+
+  _freeSpiritBtn = document.createElement("button");
+  _freeSpiritBtn.textContent = "✦ Are you a Free Spirit? ✦";
+  _freeSpiritBtn.style.cssText = `
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.65);
+    color: #ffdd88;
+    border: 2px solid #ffaa44;
+    padding: 12px 28px;
+    border-radius: 30px;
+    font-family: monospace;
+    font-size: 15px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    z-index: 500;
+    backdrop-filter: blur(6px);
+    transition: background 0.2s, transform 0.2s;
+    animation: btnPulse 2s ease-in-out infinite;
+  `;
+
+  // inject keyframe animation
+  if (!document.getElementById("_freeSpiritStyle")) {
+    const style = document.createElement("style");
+    style.id = "_freeSpiritStyle";
+    style.textContent = `
+      @keyframes btnPulse {
+        0%, 100% { box-shadow: 0 0 10px #ffaa44; }
+        50%       { box-shadow: 0 0 28px #ff44aa, 0 0 50px #ffaa44; }
+      }
+      @keyframes popIn {
+        from { opacity:0; transform:translate(-50%,-60%); }
+        to   { opacity:1; transform:translate(-50%,-50%); }
+      }
+      @keyframes popOut {
+        from { opacity:1; transform:translate(-50%,-50%); }
+        to   { opacity:0; transform:translate(-50%,-40%); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  _freeSpiritBtn.addEventListener("mouseenter", () => {
+    _freeSpiritBtn.style.background = "rgba(255,170,68,0.25)";
+  });
+  _freeSpiritBtn.addEventListener("mouseleave", () => {
+    _freeSpiritBtn.style.background = "rgba(0,0,0,0.65)";
+  });
+
+  _freeSpiritBtn.addEventListener("click", () => {
+    // release pointer lock so the user can click the modal buttons
+    document.exitPointerLock();
+    _freeSpiritBtn.remove();
+    _freeSpiritBtn = null;
+    _showFreeSpritPopup();
+  });
+
+  document.body.appendChild(_freeSpiritBtn);
+}
+
+function _showFreeSpritPopup() {
+  const popup = document.createElement("div");
+  popup.style.cssText = `
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(135deg, rgba(10,5,20,0.95), rgba(30,15,50,0.97));
+    border: 2px solid #ffaa44;
+    border-radius: 20px;
+    padding: 40px 55px;
+    text-align: center;
+    z-index: 3000;
+    font-family: monospace;
+    color: white;
+    min-width: 360px;
+    box-shadow: 0 0 60px rgba(255,170,68,0.35), 0 0 120px rgba(255,68,170,0.2);
+    backdrop-filter: blur(12px);
+    animation: popIn 0.4s ease forwards;
+  `;
+
+  popup.innerHTML = `
+    <div style="font-size:32px; margin-bottom:12px;">🌸</div>
+    <h2 style="color:#ffdd88; margin:0 0 10px; font-size:20px; letter-spacing:2px;">
+      Do you want to be a Free Spirit?
+    </h2>
+    <p style="color:#aaa; font-size:13px; margin-bottom:28px; line-height:1.6;">
+      Let go of everything and dance under the open sky…
+    </p>
+    <div style="display:flex; gap:16px; justify-content:center;">
+      <button id="_fsYes" style="
+        background: linear-gradient(135deg, #ff9933, #ff44aa);
+        color: white; border: none; padding: 12px 32px;
+        border-radius: 25px; font-family: monospace; font-size: 15px;
+        cursor: pointer; letter-spacing: 1px;
+        box-shadow: 0 0 20px rgba(255,100,50,0.5);
+        transition: transform 0.15s;
+      ">Yes ✦</button>
+      <button id="_fsNo" style="
+        background: rgba(255,255,255,0.08);
+        color: #aaa; border: 2px solid #555; padding: 12px 32px;
+        border-radius: 25px; font-family: monospace; font-size: 15px;
+        cursor: pointer; letter-spacing: 1px;
+        transition: transform 0.15s;
+      ">No</button>
+    </div>
+  `;
+
+  document.body.appendChild(popup);
+
+  popup.querySelector("#_fsYes").addEventListener("click", () => {
+    popup.style.animation = "popOut 0.3s ease forwards";
+    setTimeout(() => {
+      popup.remove();
+      _onFreeSpritYes();
+    }, 320);
+  });
+
+  popup.querySelector("#_fsNo").addEventListener("click", () => {
+    popup.style.animation = "popOut 0.3s ease forwards";
+    setTimeout(() => {
+      popup.remove();
+      _onFreeSpritNo();
+    }, 320);
+  });
+}
+
+function _onFreeSpritYes() {
+  freeSpirit = true;
+
+  // boost music
+  if (hippieAudio) hippieAudio.volume = 0.9;
+
+  // disable player movement — camera is now on autopilot
+  player.moveForward = player.moveBackward = player.moveLeft = player.moveRight = false;
+
+  // show a brief message
+  const msg = document.createElement("div");
+  msg.style.cssText = `
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffdd88; font-family: monospace; font-size: 22px;
+    letter-spacing: 3px; text-align: center;
+    pointer-events: none; z-index: 2500;
+    text-shadow: 0 0 20px #ff44aa, 0 0 40px #ffaa44;
+    animation: popIn 0.4s ease forwards;
+  `;
+  msg.textContent = "✦ You are free ✦";
+  document.body.appendChild(msg);
+  setTimeout(() => msg.remove(), 2500);
+}
+
+function _onFreeSpritNo() {
+  // fade to black and return to main hub
+  const overlay = document.createElement("div");
+  overlay.style.cssText = `
+    position: fixed; top:0; left:0; width:100%; height:100%;
+    background: black; z-index: 3000; pointer-events: none;
+    opacity: 0; transition: opacity 0.8s ease;
+  `;
+  document.body.appendChild(overlay);
+
+  setTimeout(() => (overlay.style.opacity = "1"), 10);
+
+  setTimeout(() => {
+    // stop music
+    if (hippieAudio) { hippieAudio.pause(); hippieAudio.currentTime = 0; }
+
+    // reset state — reload the page to return cleanly to the hub
+    window.location.reload();
+  }, 900);
+}
+
 // ─── Mesh Helpers ─────────────────────────────────────────────────────────────
 function setupMesh(node) {
   if (!node.isMesh) return;
@@ -916,7 +1482,7 @@ function setupPortalMesh(node, color) {
 }
 
 // ─── Portal Factory ───────────────────────────────────────────────────────────
-async function createPortal(charData, x, z, envFloorY) {
+async function createPortal(charData, x, z, envFloorY, autoTrigger = false) {
   const gltfLoader = new GLTFLoader();
   const portalGltf = await gltfLoader.loadAsync("models/portal/scene.gltf");
   const portal = portalGltf.scene;
@@ -931,7 +1497,7 @@ async function createPortal(charData, x, z, envFloorY) {
 
   scene.add(portal);
   portals.push(portal);
-  portalManager.add(portal, charData, portal.position);
+  portalManager.add(portal, charData, portal.position, autoTrigger);
 
   const light1 = new THREE.PointLight(charData.color, 1.5, 20);
   light1.position.set(0, 0.6, 0.05);
@@ -994,7 +1560,7 @@ async function createPortal(charData, x, z, envFloorY) {
 
   (function updateLabel() {
     if (!label.parentNode) return;
-    if (lonelyActive) {
+    if (lonelyActive || hippieActive) {
       label.style.display = "none";
       requestAnimationFrame(updateLabel);
       return;
@@ -1016,7 +1582,7 @@ const loadingEl = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
 const loadingBar = document.getElementById("loading-bar");
 const loader = new GLTFLoader();
-
+let wakeUpLookTime = 0; // >0 = confused look animation active
 function hideLoader() {
   if (!loadingEl) return;
   loadingEl.style.transition = "opacity 0.6s ease";
@@ -1059,6 +1625,7 @@ loader.load(
         startX + i * spacing,
         portalZ,
         envFloorY,
+        i === 1, // hippie portal auto-triggers on proximity
       );
 
       if (loadingBar)
@@ -1067,7 +1634,10 @@ loader.load(
 
     if (loadingBar) loadingBar.style.width = "100%";
     if (loadingText) loadingText.textContent = "Welcome to the Nexus!";
-    setTimeout(hideLoader, 600);
+    setTimeout(() => {
+      hideLoader();
+      startWakeUpSequence();
+    }, 600);
     animate();
   },
   (xhr) => {
@@ -1080,13 +1650,99 @@ loader.load(
     animate();
   },
 );
+function startWakeUpSequence() {
+  // ── breathing sound ──────────────────────────────────────────────────────
+ let breathAudio = null;
+  let soundStarted = false;
+  
+  function playBreathingSound() {
+    if (soundStarted) return;
+    soundStarted = true;
+    
+    breathAudio = new Audio("sound/breathing.mp3");
+    breathAudio.volume = 0.85;
+    breathAudio.play().then(() => {
+      // Fade out and stop after 4 seconds
+      setTimeout(() => {
+        const fadeDuration = 1500;
+        const steps = 30;
+        const stepTime = fadeDuration / steps;
+        const startVol = breathAudio.volume;
+        let step = 0;
+        const fadeInterval = setInterval(() => {
+          step++;
+          breathAudio.volume = Math.max(0, startVol * (1 - step / steps));
+          if (step >= steps) {
+            clearInterval(fadeInterval);
+            breathAudio.pause();
+            breathAudio.currentTime = 0;
+          }
+        }, stepTime);
+      }, 4000);
+    }).catch(() => {
+      // Retry on next user interaction
+      soundStarted = false;
+    });
+    
+    // Clean up listeners after playing
+    document.removeEventListener("click", playBreathingSound);
+    document.removeEventListener("keydown", playBreathingSound);
+  }
+  
+  // Wait for user interaction before playing
+  document.addEventListener("click", playBreathingSound);
+  document.addEventListener("keydown", playBreathingSound);
+  // ── full-screen vignette overlay ─────────────────────────────────────────
+  const vignette = document.createElement("div");
+  vignette.id = "_wakeVignette";
+  vignette.style.cssText = `
+    position: fixed; top:0; left:0; width:100%; height:100%;
+    pointer-events: none; z-index: 900;
+    background: radial-gradient(ellipse at center,
+      rgba(0,0,0,0) 30%,
+      rgba(0,0,0,0.92) 100%);
+    filter: blur(6px);
+    opacity: 1;
+    transition: opacity 3.5s ease, filter 3.5s ease;
+  `;
+  document.body.appendChild(vignette);
 
+  // ── dark tint that fades away ─────────────────────────────────────────────
+  const tint = document.createElement("div");
+  tint.id = "_wakeTint";
+  tint.style.cssText = `
+    position: fixed; top:0; left:0; width:100%; height:100%;
+    pointer-events: none; z-index: 899;
+    background: black;
+    opacity: 0.85;
+    transition: opacity 4.0s ease;
+  `;
+  document.body.appendChild(tint);
+
+  // start clearing after a short pause (feels like eyes opening slowly)
+  setTimeout(() => {
+    tint.style.opacity    = "0";
+    vignette.style.opacity = "0";
+    vignette.style.filter  = "blur(0px)";
+  }, 800);
+// ── confused look left/right after fade ──────────────────────────────────
+setTimeout(() => {
+  wakeUpLookTime = 1.0; // triggers the animation in the animate loop
+}, 800);
+  // remove DOM elements after transition completes
+  setTimeout(() => {
+    tint.remove();
+    vignette.remove();
+  }, 5000);
+}
 // ─── Resize ────────────────────────────────────────────────────────────────────
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   lonelyCamera.aspect = window.innerWidth / window.innerHeight;
   lonelyCamera.updateProjectionMatrix();
+  hippieCamera.aspect = window.innerWidth / window.innerHeight;
+  hippieCamera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
@@ -1108,18 +1764,30 @@ function animate() {
 
   time += dt;
   lonelyLightTime += dt;
+  hippieLightTime += dt;
+
+  // advance dancer animation mixers
+  hippieCharacterMixers.forEach((m) => m.update(dt));
 
   if (!isTransitioning) {
     _animFront
       .set(0, 0, -1)
       .applyQuaternion(
-        lonelyActive ? lonelyCamera.quaternion : camera.quaternion,
+        lonelyActive
+          ? lonelyCamera.quaternion
+          : hippieActive
+            ? hippieCamera.quaternion
+            : camera.quaternion,
       );
 
     _animSide
       .set(-1, 0, 0)
       .applyQuaternion(
-        lonelyActive ? lonelyCamera.quaternion : camera.quaternion,
+        lonelyActive
+          ? lonelyCamera.quaternion
+          : hippieActive
+            ? hippieCamera.quaternion
+            : camera.quaternion,
       );
 
     _animDir.set(0, 0, 0);
@@ -1169,14 +1837,92 @@ function animate() {
 
       renderer.toneMappingExposure = 1.42;
       renderer.render(lonelyScene, lonelyCamera);
+    } else if (hippieActive) {
+      if (freeSpirit) {
+        // ── Free Spirit autopilot ──────────────────────────────────────────
+        // Target: hover in front of the dancers (man at modelCenterX+6, woman at +8.5)
+        const danceTargetX = (hippieOrbs[0]?.cx || 0) + 12.0;
+        const danceTargetZ = (hippieOrbs[0]?.cz || 0) + 10.0; // a bit in front
+        const danceTargetY = 4.8;
+
+        // smoothly glide toward the dance spot
+        player.position.x += (danceTargetX - player.position.x) * dt * 0.8;
+        player.position.y += (danceTargetY - player.position.y) * dt * 0.8;
+        player.position.z += (danceTargetZ - player.position.z) * dt * 0.8;
+
+        // sway left/right and bob up/down like dancing
+        const sway  = Math.sin(time * 1.6) * 1.2;
+        const bob   = Math.sin(time * 3.2) * 0.18;
+        const tilt  = Math.sin(time * 1.1) * 0.08;
+
+        hippieCamera.position.set(
+          player.position.x + sway,
+          player.position.y + bob,
+          player.position.z,
+        );
+        hippieCamera.rotation.order = "YXZ";
+        // slowly pan left/right and tilt
+        hippieCamera.rotation.y = Math.sin(time * 0.55) * 0.45;
+        hippieCamera.rotation.x = -0.08 + tilt;
+        hippieCamera.rotation.z = Math.sin(time * 0.9) * 0.06;
+      } else {
+        // normal first-person
+        hippieCamera.position.copy(player.position);
+        hippieCamera.rotation.order = "YXZ";
+        hippieCamera.rotation.y = mouseX;
+        hippieCamera.rotation.x = mouseY;
+      }
+
+      // animate floating orbs
+      hippieOrbs.forEach((orb) => {
+        orb.angle += orb.speed * dt;
+        const cx = orb.cx || 0;
+        const cz = orb.cz || 0;
+        orb.mesh.position.set(
+          cx + Math.cos(orb.angle) * orb.radius,
+          orb.yBase + Math.sin(orb.angle * 1.3) * 1.5,
+          cz + Math.sin(orb.angle) * orb.radius,
+        );
+      });
+
+      // animate rainbow particles removed
+
+      if (hippieSkyMaterial) hippieSkyMaterial.uniforms.time.value = time;
+
+      // pulse dance-floor lights
+      hippieDanceLights.forEach((entry) => {
+        entry.light.intensity = entry.base + Math.sin(hippieLightTime * entry.freq) * entry.amp;
+      });
+
+      // ticked above each frame; nothing additional needed here
+
+      renderer.toneMappingExposure = 1.0;
+      renderer.render(hippieScene, hippieCamera);
     } else {
       camera.position.copy(player.position);
-      camera.rotation.order = "YXZ";
-      camera.rotation.y = mouseX;
-      camera.rotation.x = mouseY;
+camera.rotation.order = "YXZ";
+if (wakeUpLookTime > 0) {
+  wakeUpLookTime = Math.max(0, wakeUpLookTime - dt * 0.165);
+
+  // use running `time` for oscillation so it starts swinging immediately
+  const sway =
+    Math.sin(time * 1.8) * 0.38 * wakeUpLookTime +
+    Math.sin(time * 0.9 + 1.2) * 0.22 * wakeUpLookTime +
+    Math.sin(time * 3.1) * 0.07 * wakeUpLookTime;
+
+  const nod =
+    Math.sin(time * 1.3 + 0.5) * 0.07 * wakeUpLookTime;
+
+  camera.rotation.y = mouseX + sway;
+  camera.rotation.x = mouseY + nod;
+} else {
+  camera.rotation.y = mouseX;
+  camera.rotation.x = mouseY;
+}
+camera.rotation.z = 0;
 
       const activated = portalManager.update(player.position);
-      if (activated && !lonelyActive) startTransition(activated);
+      if (activated && !lonelyActive && !hippieActive) startTransition(activated);
 
       renderer.toneMappingExposure = 1.0;
 

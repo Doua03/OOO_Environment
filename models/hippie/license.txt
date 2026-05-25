@@ -1,0 +1,11 @@
+Model Information:
+* title:	Hippie-mobile
+* source:	https://sketchfab.com/3d-models/hippie-mobile-7b4446e83f2840fdab7916e49ff7a945
+* author:	atalik_ST (https://sketchfab.com/atalik_ST)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Hippie-mobile" (https://sketchfab.com/3d-models/hippie-mobile-7b4446e83f2840fdab7916e49ff7a945) by atalik_ST (https://sketchfab.com/atalik_ST) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
